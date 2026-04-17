@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "PM Agent (Mock Mode)",
+      "runtimeExecutable": "/usr/bin/python3",
+      "runtimeArgs": ["/Users/hemanth2ndbrain/Documents/Github/PM agent_p1/main.py", "--mock"],
+      "port": 8080
+    },
+    {
+      "name": "PM Agent (Live Run)",
+      "runtimeExecutable": "/usr/bin/python3",
+      "runtimeArgs": ["/Users/hemanth2ndbrain/Documents/Github/PM agent_p1/main.py"],
+      "port": 8081
+    }
+  ]
+}
