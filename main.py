@@ -36,6 +36,7 @@ from tools.firecrawl_tool import fetch_g2_reviews, fetch_notion_changelog, fetch
 from tools.apify_tool import fetch_reddit_posts, fetch_app_store_reviews, fetch_play_store_reviews
 
 from pipeline.registry import dedup_within_run, dedup_cross_run, register_items
+from pipeline.semantic_dedup import semantic_dedup
 from pipeline.chunker import batch_items
 from pipeline.clusterer import cluster_pain_points
 from pipeline.scorer import score_themes, apply_effort_scores
@@ -53,16 +54,18 @@ from outputs.memory_manager import update_memory, read_memory
 
 LOOKBACK_DAYS = 60
 CONFIDENCE_THRESHOLD = 0.60
+FIRECRAWL_BUDGET = 7   # max Firecrawl credits per run; reduce if running low
 
-# HN query expansion for broader coverage
+# HN queries with intent tags and signal-quality weights.
+# weight: expected relevance ratio (0-1). Higher = more specific pain-area query.
 HN_QUERIES = [
-    "Notion",
-    "Notion collaboration",
-    "Notion database problems", 
-    "Notion alternatives",
-    "Notion user feedback",
-    "Notion offline sync",
-    "Notion AI limitations",
+    {"query": "Notion",                   "intent": "brand_general",  "weight": 0.60},
+    {"query": "Notion collaboration",     "intent": "feature_collab", "weight": 0.75},
+    {"query": "Notion database problems", "intent": "pain_direct",    "weight": 0.85},
+    {"query": "Notion alternatives",      "intent": "competitive",    "weight": 0.80},
+    {"query": "Notion user feedback",     "intent": "pain_general",   "weight": 0.70},
+    {"query": "Notion offline sync",      "intent": "pain_direct",    "weight": 0.90},
+    {"query": "Notion AI limitations",    "intent": "pain_direct",    "weight": 0.88},
 ]
 
 
@@ -234,6 +237,7 @@ def run_pipeline(mock_mode: bool = False) -> None:
 
     # Deduplication
     all_items = dedup_within_run(all_items)
+    all_items = semantic_dedup(all_items, text_field="raw_text")  # remove near-duplicates before cross-run check
     all_items, skipped = dedup_cross_run(all_items)
     pipeline_stats["items_after_dedup"] = len(all_items)
     logger.info(f"After dedup: {len(all_items)} items ({skipped} skipped from prior runs)")
@@ -247,13 +251,13 @@ def run_pipeline(mock_mode: bool = False) -> None:
     if not mock_mode and os.getenv("FIRECRAWL_API_KEY"):
         logger.info("Fetching Notion changelog...")
         try:
-            notion_changelog = fetch_notion_changelog()
+            notion_changelog = fetch_notion_changelog(budget=FIRECRAWL_BUDGET)
         except Exception as e:
             logger.warning(f"Notion changelog fetch failed: {e}")
 
         logger.info("Fetching competitor changelogs...")
         try:
-            competitor_changelogs = fetch_competitor_changelogs()
+            competitor_changelogs = fetch_competitor_changelogs(budget=FIRECRAWL_BUDGET - 1)
         except Exception as e:
             logger.warning(f"Competitor changelog fetch failed: {e}")
     else:
@@ -306,6 +310,15 @@ def run_pipeline(mock_mode: bool = False) -> None:
     if not themes:
         logger.error("No themes produced after clustering. Exiting.")
         sys.exit(1)
+
+    # Enrich themes with avg_query_weight so the scorer can reward
+    # pain-area queries over generic brand queries
+    for theme in themes:
+        weights = [
+            source_map.get(pid, {}).get("query_weight", 1.0)
+            for pid in theme.get("platform_ids", [])
+        ]
+        theme["avg_query_weight"] = round(sum(weights) / len(weights), 3) if weights else 1.0
 
     # ── Phase 5: Validation + Scoring ─────────────────────────────────────────
     logger.info("=" * 60)

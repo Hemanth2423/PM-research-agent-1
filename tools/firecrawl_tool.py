@@ -10,17 +10,122 @@ logger = logging.getLogger(__name__)
 
 FIRECRAWL_BASE = "https://api.firecrawl.dev/v1"
 
-COMPETITOR_CHANGELOGS = {
-    "Coda": "https://coda.io/changelog",
-    "Confluence": "https://www.atlassian.com/blog/confluence",
-    "Obsidian": "https://obsidian.md/changelog",
-    "Craft": "https://www.craft.do/updates",
-    "Google Docs": "https://workspace.google.com/whatsnew",
-    "Mem.ai": "https://mem.ai/changelog",
-}
-
 NOTION_CHANGELOG_URL = "https://www.notion.so/releases"
 G2_NOTION_URL = "https://www.g2.com/products/notion/reviews"
+
+# Credit budget per run. Lower this if you are running low on Firecrawl credits.
+FIRECRAWL_BUDGET = 7
+
+# Ordered scrape targets with priority and expected relevance.
+# Targets with skip_reason set are never scraped (e.g. WAF-blocked sites).
+SCRAPE_TARGETS = [
+    {
+        "name": "Notion Changelog",
+        "url": NOTION_CHANGELOG_URL,
+        "type": "own_changelog",
+        "priority": 1,
+        "expected_relevance": 1.00,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 3000,
+    },
+    {
+        "name": "G2 Reviews",
+        "url": G2_NOTION_URL,
+        "type": "review_site",
+        "priority": 2,
+        "expected_relevance": 0.90,
+        "credits": 1,
+        "skip_reason": "WAF-blocked (Datadome)",
+        "wait_for": 5000,
+    },
+    {
+        "name": "Obsidian",
+        "url": "https://obsidian.md/changelog",
+        "type": "competitor_changelog",
+        "priority": 3,
+        "expected_relevance": 0.85,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+    {
+        "name": "Confluence",
+        "url": "https://www.atlassian.com/blog/confluence",
+        "type": "competitor_changelog",
+        "priority": 4,
+        "expected_relevance": 0.80,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+    {
+        "name": "Coda",
+        "url": "https://coda.io/changelog",
+        "type": "competitor_changelog",
+        "priority": 5,
+        "expected_relevance": 0.75,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+    {
+        "name": "Craft",
+        "url": "https://www.craft.do/updates",
+        "type": "competitor_changelog",
+        "priority": 6,
+        "expected_relevance": 0.65,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+    {
+        "name": "Google Docs",
+        "url": "https://workspace.google.com/whatsnew",
+        "type": "competitor_changelog",
+        "priority": 7,
+        "expected_relevance": 0.55,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+    {
+        "name": "Mem.ai",
+        "url": "https://mem.ai/changelog",
+        "type": "competitor_changelog",
+        "priority": 8,
+        "expected_relevance": 0.45,
+        "credits": 1,
+        "skip_reason": None,
+        "wait_for": 2000,
+    },
+]
+
+
+def select_scrape_targets(budget: int = FIRECRAWL_BUDGET) -> list[dict]:
+    """Return highest-priority scrape targets that fit within the credit budget.
+
+    Blocked targets (skip_reason set) are always excluded.
+    Remaining targets are selected in priority order until budget is exhausted.
+    """
+    eligible = sorted(
+        [t for t in SCRAPE_TARGETS if not t["skip_reason"]],
+        key=lambda t: t["priority"],
+    )
+    selected, remaining = [], budget
+    for target in eligible:
+        if target["credits"] <= remaining:
+            selected.append(target)
+            remaining -= target["credits"]
+        if remaining <= 0:
+            break
+
+    blocked = [t["name"] for t in SCRAPE_TARGETS if t["skip_reason"]]
+    logger.info(
+        f"Firecrawl: {len(selected)} targets selected within {budget}-credit budget "
+        f"(skipped blocked: {blocked})"
+    )
+    return selected
 
 
 def _firecrawl_scrape(url: str, wait_for: int = 2000) -> str | None:
@@ -139,23 +244,54 @@ def fetch_g2_reviews(lookback_days: int = 60) -> list[dict]:
     if not markdown:
         return []
     # G2 uses Datadome WAF — detect blocked response
-    if len(markdown) < 200 and ("enable js" in markdown.lower() or "ad blocker" in markdown.lower() or "captcha" in markdown.lower()):
+    if len(markdown) < 200 and (
+        "enable js" in markdown.lower()
+        or "ad blocker" in markdown.lower()
+        or "captcha" in markdown.lower()
+    ):
         logger.warning("G2 scrape blocked by WAF — skipping (0 reviews)")
         return []
     return _parse_g2_reviews(markdown, lookback_days)
 
 
-def fetch_notion_changelog() -> str:
-    """Fetch Notion's own changelog as markdown."""
+def fetch_notion_changelog(budget: int | None = None) -> str:
+    """Fetch Notion's own changelog as markdown.
+
+    Args:
+        budget: If provided, checks whether Notion Changelog is within the budget
+                before scraping. Pass None to always scrape (legacy behaviour).
+    """
+    if budget is not None:
+        targets = select_scrape_targets(budget)
+        if not any(t["name"] == "Notion Changelog" for t in targets):
+            logger.info("Notion Changelog skipped — credit budget exhausted")
+            return ""
     markdown = _firecrawl_scrape(NOTION_CHANGELOG_URL, wait_for=3000)
     return markdown or ""
 
 
-def fetch_competitor_changelogs() -> dict[str, str]:
-    """Fetch all competitor changelogs. Returns dict of competitor_name -> markdown."""
+def fetch_competitor_changelogs(budget: int | None = None) -> dict[str, str]:
+    """Fetch competitor changelogs within the credit budget.
+
+    Args:
+        budget: Credits available for competitor scrapes. If None, scrapes all
+                non-blocked competitors (legacy behaviour).
+
+    Returns:
+        Dict of competitor_name -> markdown content.
+    """
+    if budget is not None:
+        all_targets = select_scrape_targets(budget)
+        competitor_targets = [t for t in all_targets if t["type"] == "competitor_changelog"]
+    else:
+        competitor_targets = [
+            t for t in SCRAPE_TARGETS
+            if t["type"] == "competitor_changelog" and not t["skip_reason"]
+        ]
+
     results = {}
-    for name, url in COMPETITOR_CHANGELOGS.items():
-        logger.info(f"Fetching {name} changelog...")
-        content = _firecrawl_scrape(url, wait_for=2000)
-        results[name] = content or ""
+    for target in competitor_targets:
+        logger.info(f"Fetching {target['name']} changelog...")
+        content = _firecrawl_scrape(target["url"], wait_for=target.get("wait_for", 2000))
+        results[target["name"]] = content or ""
     return results

@@ -24,9 +24,10 @@ RICE_RIC_DIVERGENCE_FLAG = 0.30
 
 EFFORT_MULTIPLIER = {"LOW": 1.0, "MEDIUM": 0.75, "HIGH": 0.5, "VERY HIGH": 0.25}
 
-# Confidence tier thresholds
-TIER1_THRESHOLD = 15.0
-TIER2_THRESHOLD = 8.0
+# Confidence tier thresholds — recalibrated for realistic single-source runs
+# Previous values (15.0 / 8.0) required multi-source data to be reachable
+TIER1_THRESHOLD = 6.5
+TIER2_THRESHOLD = 3.5
 
 
 def _compute_engagement_z_scores(engagement_list: list[dict]) -> list[float]:
@@ -76,7 +77,7 @@ def _days_since(date_str: str) -> int:
         return 9999
 
 
-def compute_confidence_score(theme: dict, competitor_addressed: bool = False) -> float:
+def compute_confidence_score(theme: dict, competitor_addressed: bool = False) -> tuple[float, bool]:
     """Compute multi-signal confidence score for a theme."""
     score = float(theme.get("unique_mention_count", 1))
 
@@ -85,11 +86,12 @@ def compute_confidence_score(theme: dict, competitor_addressed: bool = False) ->
     score += sum(eng_weights)
 
     # Source diversity bonus/penalty
+    # 0.8× (was 0.5×) — penalises single-source but doesn't make Tier 1/2 unreachable
     src_count = theme.get("source_type_count", 1)
     if src_count >= 3:
         score *= 1.5
     elif src_count == 1:
-        score *= 0.5
+        score *= 0.8
 
     # Recency bonus
     latest = theme.get("latest_date", "")
@@ -101,13 +103,13 @@ def compute_confidence_score(theme: dict, competitor_addressed: bool = False) ->
     if competitor_addressed:
         score *= 1.2
 
-    # Staleness penalty
+    # Staleness penalty — 0.7× (was 0.3×) — still penalises old signals without destroying them
     oldest = theme.get("oldest_date", "")
     days_oldest = _days_since(oldest)
     if days_oldest >= 45:
-        score *= 0.3
+        score *= 0.7
 
-    # Source credibility (capped at 40%)
+    # Source credibility weighted by query intent weight (if available)
     breakdown = theme.get("source_breakdown", {})
     total_mentions = sum(breakdown.values()) or 1
     weighted_src_score = sum(
@@ -119,7 +121,20 @@ def compute_confidence_score(theme: dict, competitor_addressed: bool = False) ->
     max_share = max((c / total_mentions for c in breakdown.values()), default=0)
     source_dominance_capped = max_share > SOURCE_DOMINANCE_CAP
 
-    score += weighted_src_score * 0.5
+    # Query intent weight: items from more specific queries contribute more to credibility
+    avg_query_weight = theme.get("avg_query_weight", 1.0)
+    score += weighted_src_score * 0.5 * avg_query_weight
+
+    # Severity signal: reward high-frustration themes, mildly penalise low-severity noise
+    dominant_sev = theme.get("dominant_severity", "medium").lower()
+    if dominant_sev in ("high", "critical"):
+        score += 2.0
+    elif dominant_sev == "low":
+        score -= 0.5
+
+    # Cross-source diversity bonus: reward themes confirmed by multiple independent sources
+    if not source_dominance_capped and src_count >= 2:
+        score += 1.5
 
     return round(score, 2), source_dominance_capped
 
@@ -133,11 +148,11 @@ def classify_tier(confidence_score: float) -> int:
 
 
 def compute_confidence_label(score: float) -> str:
-    if score >= TIER1_THRESHOLD:
+    if score >= TIER1_THRESHOLD:   # >= 6.5
         return "VERY HIGH"
-    elif score >= TIER2_THRESHOLD:
+    elif score >= TIER2_THRESHOLD:  # >= 3.5
         return "HIGH"
-    elif score >= 4.0:
+    elif score >= 2.0:
         return "MEDIUM"
     return "LOW"
 

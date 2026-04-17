@@ -8,39 +8,49 @@ logger = logging.getLogger(__name__)
 
 HN_ALGOLIA_URL = "https://hn.algolia.com/api/v1/search_by_date"
 
+_DEFAULT_QUERIES = [
+    {"query": "Notion",                   "intent": "brand_general",  "weight": 0.60},
+    {"query": "Notion collaboration",     "intent": "feature_collab", "weight": 0.75},
+    {"query": "Notion database problems", "intent": "pain_direct",    "weight": 0.85},
+    {"query": "Notion alternatives",      "intent": "competitive",    "weight": 0.80},
+    {"query": "Notion user feedback",     "intent": "pain_general",   "weight": 0.70},
+    {"query": "Notion offline sync",      "intent": "pain_direct",    "weight": 0.90},
+    {"query": "Notion AI limitations",    "intent": "pain_direct",    "weight": 0.88},
+]
 
-def fetch_hn_items(queries: list[str] | str | None = None, lookback_days: int = 60, hits_per_page: int = 30) -> list[dict]:
+
+def fetch_hn_items(queries: list | str | None = None, lookback_days: int = 60, hits_per_page: int = 30) -> list[dict]:
     """Fetch HN stories and comments for multiple queries within lookback_days.
 
     Args:
-        queries: List of query strings, or single query string. If None, uses default queries.
-        lookback_days: Days to look back in HN history
-        hits_per_page: Results per query
+        queries: list[dict] with {query, intent, weight}, list[str] (legacy), or None (uses defaults).
+        lookback_days: Days to look back in HN history.
+        hits_per_page: Results per query.
 
     Returns:
-        List of deduplicated items across all queries
+        Deduplicated items across all queries, each tagged with query_weight.
     """
-    # Handle default/legacy single query case
+    # Normalise to list[dict] regardless of input format
     if queries is None:
-        queries = [
-            "Notion",
-            "Notion collaboration",
-            "Notion database problems",
-            "Notion alternatives",
-            "Notion feedback",
-            "Notion offline sync",
-            "Notion AI",
-        ]
+        query_configs = _DEFAULT_QUERIES
     elif isinstance(queries, str):
-        queries = [queries]
+        query_configs = [{"query": queries, "intent": "custom", "weight": 1.0}]
+    elif isinstance(queries, list) and queries and isinstance(queries[0], dict):
+        query_configs = queries   # already list[dict]
+    else:
+        # plain list[str] — backward compat
+        query_configs = [{"query": q, "intent": "custom", "weight": 1.0} for q in queries]
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     cutoff_ts = int(cutoff.timestamp())
 
     items = []
-    seen_ids = set()  # Deduplicate across queries
+    seen_ids: set[str] = set()
 
-    for query in queries:
+    for qcfg in query_configs:
+        query = qcfg["query"]
+        query_weight = float(qcfg.get("weight", 1.0))
+
         params = {
             "query": query,
             "tags": "(story,comment)",
@@ -78,6 +88,7 @@ def fetch_hn_items(queries: list[str] | str | None = None, lookback_days: int = 
                 "raw_text": text[:2000],
                 "star_rating": None,
                 "user_segment": "unknown",
+                "query_weight": query_weight,
                 "engagement": {
                     "upvotes": hit.get("points"),
                     "downvotes": None,
@@ -86,7 +97,7 @@ def fetch_hn_items(queries: list[str] | str | None = None, lookback_days: int = 
                 },
             })
 
-        logger.info(f"HN: fetched items for query='{query}'")
+        logger.info(f"HN: fetched items for query='{query}' (weight={query_weight})")
 
-    logger.info(f"HN: total {len(items)} deduplicated items across {len(queries)} queries")
+    logger.info(f"HN: total {len(items)} deduplicated items across {len(query_configs)} queries")
     return items
