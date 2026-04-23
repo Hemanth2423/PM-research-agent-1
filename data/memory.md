@@ -26,3 +26,8 @@ No prior runs.
 **Date:** 2026-04-17 16:05 UTC  
 **Items processed:** 121 → 20 relevant  
 **Themes:** 8 total, Tier1=0, Tier2=5
+
+## Run: 2026-04-20_13-34
+**Date:** 2026-04-20 13:36 UTC  
+**Items processed:** 144 → 24 relevant  
+**Themes:** 11 total, Tier1=0, Tier2=6

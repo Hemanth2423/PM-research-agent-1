@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 
 # Internal imports
 from tools.hn_tool import fetch_hn_items
-from tools.firecrawl_tool import fetch_g2_reviews, fetch_notion_changelog, fetch_competitor_changelogs
+from tools.firecrawl_tool import fetch_g2_reviews, fetch_notion_changelog, fetch_competitor_changelogs, scrape_single_url
+from tools.seed_url_mapper import SeedURLMapper
 from tools.apify_tool import fetch_reddit_posts, fetch_app_store_reviews, fetch_play_store_reviews
 
 from pipeline.registry import dedup_within_run, dedup_cross_run, register_items
@@ -54,7 +55,9 @@ from outputs.memory_manager import update_memory, read_memory
 
 LOOKBACK_DAYS = 60
 CONFIDENCE_THRESHOLD = 0.60
-FIRECRAWL_BUDGET = 7   # max Firecrawl credits per run; reduce if running low
+FIRECRAWL_BUDGET           = 7   # total Firecrawl credits per run
+FIRECRAWL_CHANGELOG_BUDGET = 5   # credits for Notion changelog + top 4 competitors
+FIRECRAWL_SEED_BUDGET      = 2   # credits for intent-targeted seed URLs
 
 # HN queries with intent tags and signal-quality weights.
 # weight: expected relevance ratio (0-1). Higher = more specific pain-area query.
@@ -188,6 +191,26 @@ def run_pipeline(mock_mode: bool = False) -> None:
             source_errors["HN"] = str(e)
             logger.error(f"HN fetch failed: {e}")
 
+        # SeedURLMapper: intent-targeted seed expansion (free HN + budget Firecrawl)
+        active_intents = list({q["intent"] for q in HN_QUERIES})
+        seed_mapper = SeedURLMapper(
+            firecrawl_seed_budget=FIRECRAWL_SEED_BUDGET,
+            lookback_days=LOOKBACK_DAYS,
+        )
+        seeds = seed_mapper.get_seeds_for_intents(active_intents)
+
+        if seeds["hn_api"]:
+            try:
+                hn_seed_items = fetch_hn_items(
+                    queries=seed_mapper.to_hn_query_configs(seeds["hn_api"]),
+                    lookback_days=LOOKBACK_DAYS,
+                )
+                all_items.extend(hn_seed_items)
+                logger.info(f"HN seed queries: {len(hn_seed_items)} additional items")
+            except Exception as e:
+                source_errors["HN_seeds"] = str(e)
+                logger.error(f"HN seed fetch failed: {e}")
+
         # G2 (requires Firecrawl)
         try:
             g2_items = fetch_g2_reviews(lookback_days=LOOKBACK_DAYS)
@@ -251,15 +274,42 @@ def run_pipeline(mock_mode: bool = False) -> None:
     if not mock_mode and os.getenv("FIRECRAWL_API_KEY"):
         logger.info("Fetching Notion changelog...")
         try:
-            notion_changelog = fetch_notion_changelog(budget=FIRECRAWL_BUDGET)
+            notion_changelog = fetch_notion_changelog(budget=FIRECRAWL_CHANGELOG_BUDGET)
         except Exception as e:
             logger.warning(f"Notion changelog fetch failed: {e}")
 
         logger.info("Fetching competitor changelogs...")
         try:
-            competitor_changelogs = fetch_competitor_changelogs(budget=FIRECRAWL_BUDGET - 1)
+            competitor_changelogs = fetch_competitor_changelogs(budget=FIRECRAWL_CHANGELOG_BUDGET - 1)
         except Exception as e:
             logger.warning(f"Competitor changelog fetch failed: {e}")
+
+        # Firecrawl seed URLs (budget-capped, high-relevance intent-targeted pages)
+        if seeds.get("firecrawl"):
+            for target in seed_mapper.to_firecrawl_targets(seeds["firecrawl"]):
+                try:
+                    markdown = scrape_single_url(target["url"], wait_for=target["wait_for"])
+                    if markdown and len(markdown) > 200:
+                        safe_name = target["name"].lower().replace(" ", "_").replace(":", "")
+                        all_items.append({
+                            "source": "Firecrawl_Seed",
+                            "url": target["url"],
+                            "platform_id": f"fc_seed_{safe_name}",
+                            "date": datetime.now().strftime("%Y-%m-%d"),
+                            "raw_text": markdown[:2000],
+                            "star_rating": None,
+                            "user_segment": "unknown",
+                            "query_intent": target["intent"],
+                            "query_weight": target["expected_relevance"],
+                            "engagement": {
+                                "upvotes": None, "downvotes": None,
+                                "star_rating": None, "helpful_votes": None,
+                            },
+                        })
+                        logger.info(f"Firecrawl seed scraped: {target['name']}")
+                except Exception as e:
+                    source_errors[f"fc_seed_{target['name']}"] = str(e)
+                    logger.error(f"Firecrawl seed scrape failed for {target['name']}: {e}")
     else:
         logger.info("Skipping changelog fetches (no Firecrawl key or mock mode)")
 

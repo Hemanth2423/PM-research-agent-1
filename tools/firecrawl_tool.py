@@ -295,3 +295,11 @@ def fetch_competitor_changelogs(budget: int | None = None) -> dict[str, str]:
         content = _firecrawl_scrape(target["url"], wait_for=target.get("wait_for", 2000))
         results[target["name"]] = content or ""
     return results
+
+
+def scrape_single_url(url: str, wait_for: int = 2000) -> str:
+    """Public wrapper around _firecrawl_scrape for external callers (e.g. SeedURLMapper).
+
+    Returns markdown content or empty string. Never raises.
+    """
+    return _firecrawl_scrape(url, wait_for=wait_for) or ""

@@ -13,13 +13,25 @@ For each item, determine:
 2. Extract: user_segment (startup/mid_market/enterprise/power_user/individual/unknown),
    cleaned_text (the core complaint or feedback, max 300 chars).
 
+When an item includes a "query_intent" field, use it to sharpen relevance judgement:
+- "pain_direct"    → mark relevant if it describes a specific friction or broken workflow in Notion
+- "competitive"    → mark relevant if it compares Notion to alternatives, describes a user switch,
+                     or a competitor entry describes a feature Notion currently lacks
+- "feature_collab" → mark relevant if it mentions collaboration, sharing, or team workflow friction
+- "pain_general"   → accept broader Notion dissatisfaction or confusion signals
+- "brand_general"  → apply standard relevance bar (Notion the tool, not the word)
+
+For items with source="Firecrawl_Seed": mark relevant if the content describes a feature
+that Notion currently lacks or does worse than the competitor.
+
 Return JSON array. Each element:
 {
   "platform_id": "the original platform_id",
   "is_relevant": true/false,
   "cleaned_text": "concise summary of the feedback",
   "user_segment": "one of: startup, mid_market, enterprise, power_user, individual, unknown",
-  "relevance_reasoning": "one sentence why relevant or not"
+  "relevance_reasoning": "one sentence why relevant or not",
+  "query_intent": "copy from input query_intent field if present, else null"
 }
 
 Rules:

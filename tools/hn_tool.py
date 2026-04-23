@@ -89,6 +89,7 @@ def fetch_hn_items(queries: list | str | None = None, lookback_days: int = 60, h
                 "star_rating": None,
                 "user_segment": "unknown",
                 "query_weight": query_weight,
+                "query_intent": qcfg.get("intent", ""),
                 "engagement": {
                     "upvotes": hit.get("points"),
                     "downvotes": None,
